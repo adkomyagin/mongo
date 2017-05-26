@@ -20,3 +20,21 @@ md = MongoRunner.runMongod({
 });
 
 assert.eq(null, md, "Possible to start mongod with expired certificate");
+
+// This test ensures that a mongod with SSL will not start with a certificate that has a wrong purpose
+md = MongoRunner.runMongod({
+    sslMode: "requireSSL",
+    sslPEMKeyFile: "jstests/libs/eku_client.pem",
+    sslCAFile: "jstests/libs/eku_client.pem"
+});
+
+assert.eq(null, md, "Possible to start mongod with only client EKU");
+
+// This test ensures that a mongod with SSL will not start with a certificate that has a wrong purpose
+md = MongoRunner.runMongod({
+    sslMode: "requireSSL",
+    sslPEMKeyFile: "jstests/libs/eku_server.pem",
+    sslCAFile: "jstests/libs/eku_server.pem"
+});
+
+assert.eq(null, md, "Possible to start mongod with only server EKU");

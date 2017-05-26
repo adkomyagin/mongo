@@ -291,12 +291,14 @@ private:
      * @param subjectName as a pointer to the subject name variable being set.
      * @param serverNotAfter a Date_t object pointer that is valued if the
      * date is to be checked (as for a server certificate) and null otherwise.
+     * @param isServer true when validating a server cert, false otherwise
      * @return bool showing if the function was successful.
      */
     bool _parseAndValidateCertificate(const std::string& keyFile,
                                       const std::string& keyPassword,
                                       std::string* subjectName,
-                                      Date_t* serverNotAfter);
+                                      Date_t* serverNotAfter,
+                                      bool isServer);
 
 
     StatusWith<stdx::unordered_set<RoleName>> _parsePeerRoles(X509* peerCert) const;
@@ -521,7 +523,7 @@ SSLManager::SSLManager(const SSLParams& params, bool isServer)
 
     if (!clientPEM.empty()) {
         if (!_parseAndValidateCertificate(
-                clientPEM, clientPassword, &_sslConfiguration.clientSubjectName, NULL)) {
+                clientPEM, clientPassword, &_sslConfiguration.clientSubjectName, NULL, false)) {
             uasserted(16941, "ssl initialization problem");
         }
     }
@@ -534,7 +536,8 @@ SSLManager::SSLManager(const SSLParams& params, bool isServer)
         if (!_parseAndValidateCertificate(params.sslPEMKeyFile,
                                           params.sslPEMKeyPassword,
                                           &_sslConfiguration.serverSubjectName,
-                                          &_sslConfiguration.serverCertificateExpirationDate)) {
+                                          &_sslConfiguration.serverCertificateExpirationDate,
+                                          true)) {
             uasserted(16942, "ssl initialization problem");
         }
 
@@ -735,7 +738,8 @@ unsigned long long SSLManager::_convertASN1ToMillis(ASN1_TIME* asn1time) {
 bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
                                               const std::string& keyPassword,
                                               std::string* subjectName,
-                                              Date_t* serverCertificateExpirationDate) {
+                                              Date_t* serverCertificateExpirationDate,
+                                              bool isServer) {
     BIO* inBIO = BIO_new(BIO_s_file_internal());
     if (inBIO == NULL) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
@@ -781,6 +785,30 @@ bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
         }
 
         *serverCertificateExpirationDate = Date_t::fromMillisSinceEpoch(notAfterMillis);
+    }
+
+    if (! _weakValidation) {
+        // Check the proper extended key usage (X509v3)
+        EXTENDED_KEY_USAGE *extusage = NULL;
+        bool extKeyUsageOk = false;
+        int nid = isServer ? NID_server_auth : NID_client_auth;
+    
+        // If extensions are present, go through all of them until we find a match
+        if ((extusage = static_cast<EXTENDED_KEY_USAGE *>( X509_get_ext_d2i(x509, NID_ext_key_usage, NULL, NULL) ))) {
+            for (int i = 0; i < sk_ASN1_OBJECT_num(extusage); i++) {
+                if (OBJ_obj2nid(sk_ASN1_OBJECT_value(extusage, i)) == nid) {
+                    extKeyUsageOk = true;
+                    break;
+                }
+            }
+            sk_ASN1_OBJECT_pop_free(extusage, ASN1_OBJECT_free);
+        } else
+            extKeyUsageOk = true; // it is okay not to specify extended key usage at all
+
+        if (! extKeyUsageOk) {
+            severe() << "Incorrect SSL certificate extended key usage";
+            fassertFailedNoTrace(28655);
+        }
     }
 
     return true;
